@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import time
-from unittest import result
 import uuid
 import zoneinfo
 from collections import defaultdict
@@ -20,14 +19,18 @@ from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
+from unittest import result
 
 import boto3
 import requests
 import yaml
 from jinja2 import Template
-from poemai_utils.basic_types_utils import (any_to_bool, linebreak,
-                                            replace_decimal_with_string,
-                                            replace_floats_with_decimal)
+from poemai_utils.basic_types_utils import (
+    any_to_bool,
+    linebreak,
+    replace_decimal_with_string,
+    replace_floats_with_decimal,
+)
 from poemai_utils.enum_utils import add_enum_attrs, add_enum_repr
 from poemai_utils.openai.ask import Ask
 from poemai_utils.time_utils import current_time_iso
@@ -329,6 +332,8 @@ class Config(BaseModel):
     max_turns: int = 20
     scenarios: list[Scenario] = []
     test_set_title: Optional[str] = None
+    debug_url_template: Optional[str] = None
+    conversation_url_template: Optional[str] = None
 
 
 class BotTestResultStatus(str, Enum):
@@ -410,7 +415,14 @@ def get_case_conversation(url_base, case):
     url = f"{url_base}/case_managers/{cm}/managed_cases/{mc}/conversation"
     r = requests.get(url)
     r.raise_for_status()
-    return r.json()
+
+    retval = r.json()
+
+    _logger.info(
+        f"Case state: {retval.get('case_state', 'UNKNOWN')}, Current conversation ID: {retval.get('current_conversation_id', 'N/A')}"
+    )
+
+    return retval
 
 
 def is_completed(conv):
@@ -432,16 +444,20 @@ def poll_until_user_turn(
 
 
 def format_conversation(conv):
-    """Format conversation for display"""
     out = []
     for disp in conv["conversations_list"]:
         for item in disp["conversation_items"]:
-            # Handle missing fields gracefully
-            role = item.get("display_role", "UNKNOWN")
-            content = item.get("content", "")
-            # Only add items that have both role and content
-            if role != "UNKNOWN" and content:
-                out.append(f"{role}: {content}")
+            try:
+                if (
+                    not item["is_user_visible"]
+                    or item["display_role"] == "BOT_PROGRESS"
+                ):
+                    continue
+                role = "User" if item["display_role"] == "USER" else "Assistant"
+                out.append(f"----------\n{role}:\n{item['content']}\n")
+            except KeyError:
+                # Skip items with missing required fields
+                continue
     return "\n".join(out)
 
 
@@ -497,186 +513,215 @@ def send_user_message(url_base, case, headers, corpus_key, message):
     return r.json()
 
 
-def run_scenario(scn, cfg, ask, corpus_key):
-    """Run a test scenario"""
-    url_base = make_url_base(cfg.api, corpus_key)
-    test_results = []
-    for language in [LanaguageCode(l) for l in scn.scenario_languages]:
-        action_durations = []
-        headers = {"Accept-Language": f"{language.value};q=0.9"}
-        case = None
-        turn = 0
-        test_result = None
-
-        # Create preliminary BotTestResultRecord with minimal info
-        test_name = scn.name
-        preliminary_record = BotTestResultRecord(
-            test_name=test_name,
-            test_result=BotTestResult(
-                test_passed=BotTestResultStatus.NOK,
-                description="Test not completed.",
-            ),
-            test_time=current_time_iso(),
-            test_case_id="",
-            test_case_description=scn.situation,
-            test_check_instructions=scn.check_instructions,
-            test_case_language=language,
-            case_manager_id="",
-            managed_case_id="",
-            action_durations=[],
-            corpus_key=corpus_key,
+def run_scenario(scn, cfg, ask):
+    # Check if scenario should be skipped
+    if scn.skip:
+        test_result = BotTestResult(
+            test_passed=BotTestResultStatus.SKIPPED,
+            description="Test skipped as configured",
         )
-        _logger.info(
-            f"{test_name:<30}: test_case_description: {preliminary_record.test_case_description}"
+        languages = (
+            scn.scenario_languages if scn.scenario_languages else [LanaguageCode.de]
         )
-        if scn.skip:
-            preliminary_record.test_result = BotTestResult(
-                test_passed=BotTestResultStatus.SKIPPED,
-                description="Test skipped as configured.",
+        return [
+            BotTestResultRecord(
+                test_name=scn.name,
+                test_result=test_result,
+                test_time=current_time_iso(),
+                test_case_id="",
+                test_case_description=scn.situation,
+                test_check_instructions=scn.check_instructions,
+                case_manager_id="",
+                managed_case_id="",
+                corpus_key=cfg.corpus_key,
+                test_case_language=lang,
+                action_durations=[],
             )
-            test_results.append(preliminary_record)
-            continue
+            for lang in languages
+        ]
+
+    url_base = make_url_base(cfg.api, cfg.corpus_key)
+    test_results = []
+    languages = scn.scenario_languages if scn.scenario_languages else ["de"]
+    for language in [LanaguageCode(l) for l in languages]:
+        case_object = None
 
         try:
-            # Create case
+            action_durations = []
+            headers = {"Accept-Language": f"{language.value};q=0.9"}
             start_time = time.time()
-            case = create_new_case(url_base, headers, test_name)
+            case_object = create_new_case(url_base, headers, scn.name)
+            end_time = time.time()
             action_durations.append(
                 ActionDurationMeasurement(
-                    action_name="create_case", action_duration=time.time() - start_time
+                    action_name="create_new_case",
+                    action_duration=end_time - start_time,
                 )
             )
 
-            preliminary_record.case_manager_id = case["case_manager_id"]
-            preliminary_record.managed_case_id = case["managed_case_id"]
-
-            # Initial conversation state
-            start_time = time.time()
-            conv = poll_until_user_turn(url_base, case, headers, test_name=test_name)
-            action_durations.append(
-                ActionDurationMeasurement(
-                    action_name="initial_poll", action_duration=time.time() - start_time
-                )
+            prompt_tmpl = (
+                Template(cfg.prompt_template)
+                if cfg.prompt_template is not None
+                else None
+            )
+            check_tmplate = (
+                Template(cfg.check_template) if cfg.check_template is not None else None
+            )
+            max_turns = (
+                scn.max_turns
+                if scn.max_turns is not None
+                else (cfg.max_turns if cfg.max_turns is not None else 20)
             )
 
-            # Send initial user message
-            start_time = time.time()
-            send_user_message(url_base, case, headers, corpus_key, scn.situation)
-            action_durations.append(
-                ActionDurationMeasurement(
-                    action_name="send_initial_message",
-                    action_duration=time.time() - start_time,
-                )
-            )
-
-            turn += 1
-
-            # Conversation loop
-            while turn < scn.max_turns:
+            for turn in range(max_turns):
+                _logger.info(f"Warte auf Bot-Antwort (Zug {turn + 1}/{max_turns})")
                 start_time = time.time()
-                conv = poll_until_user_turn(
-                    url_base, case, headers, test_name=test_name
-                )
+                conv = poll_until_user_turn(url_base, case_object, headers)
+                end_time = time.time()
                 action_durations.append(
                     ActionDurationMeasurement(
-                        action_name=f"poll_turn_{turn}",
-                        action_duration=time.time() - start_time,
+                        action_name="wait_for_bot_response",
+                        action_duration=end_time - start_time,
                     )
                 )
+                _logger.info("Antwort erhalten")
 
+                last_assistant_msg = last_assistant_message(conv)
+                if last_assistant_msg:
+                    _logger.info(f"Letzte Bot-Antwort: {last_assistant_msg}")
                 if is_completed(conv):
-                    _logger.info(f"{test_name:<30}: Case completed after {turn} turns")
+                    _logger.info("Conversation abgeschlossen nach %d Turns", turn)
                     break
 
-                # Get last assistant message for evaluation
-                last_msg = last_assistant_message(conv)
-                if not last_msg:
-                    _logger.warning(f"{test_name:<30}: No assistant message found")
-                    break
+                conv_text = format_conversation(conv)
+                prompt = prompt_tmpl.render(
+                    situation=scn.situation,
+                    conversation_text=conv_text,
+                    language=language.language_name,
+                )
+                _logger.info("Prompt an LLM:\n%s", prompt)
+                reply = ask.ask(prompt)
+                _logger.info("Tester antwortet: %s", reply.strip())
 
-                # If we have a check template, use AI to evaluate
-                if scn.check_template or cfg.check_template:
-                    check_template = scn.check_template or cfg.check_template
-                    formatted_conversation = format_conversation(conv)
+                send_user_message(url_base, case_object, headers, cfg.corpus_key, reply)
 
-                    prompt = check_template.format(
-                        situation=scn.situation,
-                        conversation=formatted_conversation,
-                        check_instructions=scn.check_instructions or "",
-                    )
-
-                    start_time = time.time()
-                    response = ask.ask(prompt)
-                    action_durations.append(
-                        ActionDurationMeasurement(
-                            action_name=f"ai_check_turn_{turn}",
-                            action_duration=time.time() - start_time,
-                        )
-                    )
-
-                    if "SUCCESS" in response.upper() or "OK" in response.upper():
-                        test_result = BotTestResult(
-                            test_passed=BotTestResultStatus.OK,
-                            description=f"Test passed after {turn} turns. AI evaluation: {response}",
-                        )
-                        break
-                    elif turn >= scn.max_turns - 1:
-                        test_result = BotTestResult(
-                            test_passed=BotTestResultStatus.NOK,
-                            description=f"Test failed - max turns reached. AI evaluation: {response}",
-                        )
-                        break
-                    else:
-                        # Continue conversation based on AI feedback
-                        continue_prompt = f"Based on the bot's response, continue the conversation to test the scenario. Previous response: {last_msg}"
-                        start_time = time.time()
-                        next_message = ask.ask(continue_prompt)
-                        action_durations.append(
-                            ActionDurationMeasurement(
-                                action_name=f"ai_continue_turn_{turn}",
-                                action_duration=time.time() - start_time,
-                            )
-                        )
-
-                        start_time = time.time()
-                        send_user_message(
-                            url_base, case, headers, corpus_key, next_message
-                        )
-                        action_durations.append(
-                            ActionDurationMeasurement(
-                                action_name=f"send_message_turn_{turn}",
-                                action_duration=time.time() - start_time,
-                            )
-                        )
-                else:
-                    # Simple completion check without AI
-                    if is_completed(conv):
-                        test_result = BotTestResult(
-                            test_passed=BotTestResultStatus.OK,
-                            description=f"Case completed successfully after {turn} turns",
-                        )
-                        break
-
-                turn += 1
-
-            if not test_result:
+            if not is_completed(conv):
                 test_result = BotTestResult(
                     test_passed=BotTestResultStatus.NOK,
-                    description=f"Test incomplete - reached max turns ({scn.max_turns})",
+                    description="Konversation nicht abgeschlossen.",
                 )
+                test_result_record = BotTestResultRecord(
+                    test_name=scn.name,
+                    test_result=test_result,
+                    test_time=current_time_iso(),
+                    test_case_id=case_object["managed_case_id"],
+                    test_case_description=scn.situation,
+                    test_case_language=language,
+                    case_manager_id=case_object["case_manager_id"],
+                    managed_case_id=case_object["managed_case_id"],
+                    action_durations=action_durations,
+                    corpus_key=cfg.corpus_key,
+                )
+                test_results.append(test_result_record)
+                _logger.info("Konversation nicht abgeschlossen.")
+                continue
 
+            # Optional: Check-Prompt ausführen
+            if scn.check_instructions:
+                _logger.info("Check-Prompt ausführen")
+
+                conv = get_case_conversation(url_base, case_object)
+                conv_text = format_conversation(conv)
+
+                test_result_schema = json.dumps(BotTestResult.model_json_schema())
+                check_template = Template(scn.check_instructions)
+                check_prompt = check_template.render(
+                    conversation_text=conv_text,
+                    situation=scn.situation,
+                    check_instructions=scn.check_instructions,
+                    test_result_schema=test_result_schema,
+                    language=language.language_name,
+                )
+                _logger.info("Check-Prompt an LLM:\n%s", check_prompt)
+                result = ask.ask(check_prompt)
+                try:
+
+                    test_result = BotTestResult(**json.loads(result))
+                except Exception as e:
+                    _logger.error(f"Error parsing test result: {e}")
+                    test_result = BotTestResult(
+                        test_passed=BotTestResultStatus.NOK,
+                        description=f"Fehler beim Parsen des Testresultats: {e}",
+                    )
+
+                test_result_record = BotTestResultRecord(
+                    test_name=scn.name,
+                    test_result=test_result,
+                    test_time=current_time_iso(),
+                    test_case_id=case_object["managed_case_id"],
+                    test_case_description=scn.situation,
+                    test_case_language=language,
+                    case_manager_id=case_object["case_manager_id"],
+                    managed_case_id=case_object["managed_case_id"],
+                    action_durations=action_durations,
+                    corpus_key=cfg.corpus_key,
+                )
+                test_results.append(test_result_record)
+
+            else:
+                test_result = BotTestResult(
+                    test_passed=BotTestResultStatus.OK,
+                    description="Case completed successfully - no check instructions provided.",
+                )
+                test_result_record = BotTestResultRecord(
+                    test_name=scn.name,
+                    test_result=test_result,
+                    test_time=current_time_iso(),
+                    test_case_id=case_object["managed_case_id"],
+                    test_case_description=scn.situation,
+                    test_case_language=language,
+                    case_manager_id=case_object["case_manager_id"],
+                    managed_case_id=case_object["managed_case_id"],
+                    action_durations=action_durations,
+                    corpus_key=cfg.corpus_key,
+                )
+                test_results.append(test_result_record)
+
+                print(f"[{scn.name}] Scenario done.")
         except Exception as e:
-            _logger.exception(f"{test_name:<30}: Test failed with error: {e}")
+            _logger.error(
+                f"Error occurred while processing scenario {scn.name} for language {language.language_name}: {e}"
+            )
             test_result = BotTestResult(
                 test_passed=BotTestResultStatus.NOK,
-                description=f"Test failed with error: {str(e)}",
+                description=f"Fehler beim Verarbeiten des Szenarios: {e}",
             )
+            test_result_record = BotTestResultRecord(
+                test_name=scn.name,
+                test_result=test_result,
+                test_time=current_time_iso(),
+                test_case_id=(
+                    case_object.get("managed_case_id", "") if case_object else ""
+                ),
+                test_case_description=scn.situation,
+                test_case_language=language,
+                case_manager_id=(
+                    case_object.get("case_manager_id", "") if case_object else ""
+                ),
+                managed_case_id=(
+                    case_object.get("managed_case_id", "") if case_object else ""
+                ),
+                action_durations=(
+                    action_durations if "action_durations" in locals() else []
+                ),
+                corpus_key=cfg.corpus_key,
+            )
+            test_results.append(test_result_record)
 
-        # Update the preliminary record with final results
-        preliminary_record.test_result = test_result
-        preliminary_record.action_durations = action_durations
-        test_results.append(preliminary_record)
-
+    for tr in test_results:
+        _logger.info(
+            f"Test {tr.test_name} - Ergebnis: {tr.test_result.test_passed.value} - Beschreibung: {tr.test_result.description}"
+        )
     return test_results
 
 
@@ -818,10 +863,10 @@ def calc_view_urls(
     return debug_url, conversation_url
 
 
-def safe_run_scenario(scn, cfg, ask, corpus_key):
+def safe_run_scenario(scn, cfg, ask):
     """Run scenario with error handling"""
     try:
-        return run_scenario(scn, cfg, ask, corpus_key)
+        return run_scenario(scn, cfg, ask)
     except Exception as e:
         _logger.exception(f"Error running scenario {scn.name}: {e}")
         return [
@@ -837,9 +882,9 @@ def safe_run_scenario(scn, cfg, ask, corpus_key):
                 test_check_instructions=scn.check_instructions,
                 case_manager_id="",
                 managed_case_id="",
-                corpus_key=corpus_key,
                 test_case_language=LanaguageCode.de,
                 action_durations=[],
+                corpus_key=cfg.corpus_key,
             )
         ]
 
@@ -854,12 +899,6 @@ def main():
         help="Path to the test scenarios / configuration file",
     )
     p.add_argument(
-        "--corpus-key",
-        "-k",
-        required=True,
-        help="Corpus key to test against",
-    )
-    p.add_argument(
         "--results-dir",
         "-r",
         required=False,
@@ -871,17 +910,6 @@ def main():
         required=False,
         help="S3 URL to publish the test results",
     )
-    p.add_argument(
-        "--debug-url-template",
-        required=False,
-        help="URL template for debug links (e.g., 'https://app.staging.poemai.ch/debug/{corpus_key}/{case_manager_id}/{managed_case_id}')",
-    )
-    p.add_argument(
-        "--conversation-url-template",
-        required=False,
-        help="URL template for conversation links (e.g., 'https://app.staging.poemai.ch/conversation/{corpus_key}/{case_manager_id}/{managed_case_id}')",
-    )
-
     args = p.parse_args()
 
     results_dir = Path(args.results_dir) if args.results_dir else Path(".")
@@ -900,7 +928,7 @@ def main():
     test_results = []
     with ThreadPoolExecutor(max_workers=4) as executor:
         future_to_scenario = {
-            executor.submit(safe_run_scenario, scn, cfg, ask, args.corpus_key): scn
+            executor.submit(safe_run_scenario, scn, cfg, ask): scn
             for scn in cfg.scenarios
         }
         for future in as_completed(future_to_scenario):
@@ -909,10 +937,10 @@ def main():
 
     test_results_report.test_results = test_results
 
-    # Add view URLs if templates provided
+    # Add view URLs if templates provided in config
     for tr in test_results:
         debug_url, conversation_url = calc_view_urls(
-            tr, args.debug_url_template, args.conversation_url_template
+            tr, cfg.debug_url_template, cfg.conversation_url_template
         )
         tr.debug_view_url = debug_url
         tr.conversation_view_url = conversation_url

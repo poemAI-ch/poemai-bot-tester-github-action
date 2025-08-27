@@ -86,6 +86,8 @@ class TestConfigModels:
             "corpus_key": "test_corpus",
             "model": "GPT_4_o_CHATGPT_LATEST",
             "prompt_template": "Test template",
+            "debug_url_template": "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}",
+            "conversation_url_template": "https://chat.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}",
             "scenarios": [
                 {
                     "name": "Test Scenario",
@@ -96,6 +98,14 @@ class TestConfigModels:
         config = Config(**config_data)
         assert config.corpus_key == "test_corpus"
         assert config.model == "GPT_4_o_CHATGPT_LATEST"
+        assert (
+            config.debug_url_template
+            == "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
+        )
+        assert (
+            config.conversation_url_template
+            == "https://chat.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
+        )
         assert len(config.scenarios) == 1
 
     def test_config_model_defaults(self):
@@ -110,6 +120,8 @@ class TestConfigModels:
         assert config.model == "GPT_4_o_CHATGPT_LATEST"  # Default value
         assert config.max_turns == 20  # Default value
         assert config.test_set_title is None  # Default value
+        assert config.debug_url_template is None  # Default value
+        assert config.conversation_url_template is None  # Default value
 
     def test_config_model_invalid(self):
         """Test invalid config model"""
@@ -147,6 +159,8 @@ corpus_key: "test_corpus"
 model: "GPT_4_o_CHATGPT_LATEST"
 prompt_template: "Test template"
 test_set_title: "Test Suite"
+debug_url_template: "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
+conversation_url_template: "https://chat.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
 scenarios:
   - name: "Scenario 1"
     situation: "Test situation 1"
@@ -160,6 +174,14 @@ scenarios:
             assert config.corpus_key == "test_corpus"
             assert config.model == "GPT_4_o_CHATGPT_LATEST"
             assert config.test_set_title == "Test Suite"
+            assert (
+                config.debug_url_template
+                == "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
+            )
+            assert (
+                config.conversation_url_template
+                == "https://chat.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
+            )
             assert len(config.scenarios) == 2
             assert config.scenarios[0].max_turns == 15
             assert config.scenarios[1].skip is True
@@ -267,16 +289,28 @@ class TestConversationUtilities:
             "conversations_list": [
                 {
                     "conversation_items": [
-                        {"display_role": "USER", "content": "Hello"},
-                        {"display_role": "ASSISTANT", "content": "Hi there!"},
-                        {"display_role": "USER", "content": "How are you?"},
+                        {
+                            "display_role": "USER",
+                            "content": "Hello",
+                            "is_user_visible": True,
+                        },
+                        {
+                            "display_role": "ASSISTANT",
+                            "content": "Hi there!",
+                            "is_user_visible": True,
+                        },
+                        {
+                            "display_role": "USER",
+                            "content": "How are you?",
+                            "is_user_visible": True,
+                        },
                     ]
                 }
             ]
         }
 
         result = format_conversation(conv)
-        expected = "USER: Hello\nASSISTANT: Hi there!\nUSER: How are you?"
+        expected = "----------\nUser:\nHello\n\n----------\nAssistant:\nHi there!\n\n----------\nUser:\nHow are you?\n"
         assert result == expected
 
     def test_format_conversation_empty(self):
@@ -636,9 +670,19 @@ class TestEdgeCases:
             "conversations_list": [
                 {
                     "conversation_items": [
-                        {"display_role": "USER"},  # Missing content
-                        {"content": "Hello"},  # Missing display_role
-                        {"display_role": "ASSISTANT", "content": "Hi"},  # Valid
+                        {
+                            "display_role": "USER",
+                            "is_user_visible": True,
+                        },  # Missing content
+                        {
+                            "content": "Hello",
+                            "is_user_visible": True,
+                        },  # Missing display_role
+                        {
+                            "display_role": "ASSISTANT",
+                            "content": "Hi",
+                            "is_user_visible": True,
+                        },  # Valid
                     ]
                 }
             ]
@@ -647,7 +691,7 @@ class TestEdgeCases:
         # The function should handle missing fields gracefully
         result = format_conversation(conv)
         # Should only include the valid item
-        assert "ASSISTANT: Hi" in result
+        assert "Assistant:\nHi" in result
 
 
 class TestScenarioExecution:
@@ -672,12 +716,16 @@ class TestScenarioExecution:
             "case_manager_id": "cm123",
             "managed_case_id": "mc456",
         }
-        mock_poll.return_value = {"case_state": "WAITING_FOR_USER_INPUT"}
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
         mock_send_message.return_value = {}
         mock_is_completed.side_effect = [
-            False,
-            True,
-        ]  # Not completed first, then completed
+            False,  # First call in the loop - not completed
+            True,  # Second call in the loop - completed, breaks loop
+            True,  # Third call after loop - still completed
+        ]
         mock_last_msg.return_value = "Bot response"
 
         # Create test scenario
@@ -699,7 +747,7 @@ class TestScenarioExecution:
         ask_mock = MagicMock()
 
         # Run scenario
-        results = run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = run_scenario(scenario, config, ask_mock)
 
         # Verify results
         assert len(results) == 1
@@ -718,8 +766,10 @@ class TestScenarioExecution:
     @patch("bot_tester.is_completed")
     @patch("bot_tester.last_assistant_message")
     @patch("bot_tester.format_conversation")
+    @patch("bot_tester.get_case_conversation")
     def test_run_scenario_with_ai_evaluation_success(
         self,
+        mock_get_conversation,
         mock_format_conv,
         mock_last_msg,
         mock_is_completed,
@@ -735,15 +785,20 @@ class TestScenarioExecution:
         }
         mock_poll.return_value = {"case_state": "WAITING_FOR_USER_INPUT"}
         mock_send_message.return_value = {}
-        mock_is_completed.return_value = False
+        mock_is_completed.side_effect = [
+            False,  # First call in the loop - not completed
+            True,  # Second call in the loop - completed, breaks loop
+            True,  # Third call after loop - still completed
+        ]
         mock_last_msg.return_value = "Bot response"
         mock_format_conv.return_value = "USER: Test\nASSISTANT: Bot response"
+        mock_get_conversation.return_value = {"conversations_list": []}
 
         # Create scenario with check template
         scenario = Scenario(
             name="AI Test Scenario",
             situation="Test AI evaluation",
-            check_template="Check: {situation}\n{conversation}",
+            check_instructions="Check: {situation}\n{conversation}",
             scenario_languages=[LanaguageCode.de],
         )
 
@@ -756,9 +811,11 @@ class TestScenarioExecution:
 
         # Mock Ask object to return success
         ask_mock = MagicMock()
-        ask_mock.ask.return_value = "SUCCESS: Test passed"
+        ask_mock.ask.return_value = (
+            '{"test_passed": "OK", "description": "SUCCESS: Test passed after 1 turns"}'
+        )
 
-        results = run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = run_scenario(scenario, config, ask_mock)
 
         assert len(results) == 1
         result = results[0]
@@ -808,14 +865,13 @@ class TestScenarioExecution:
         )
 
         ask_mock = MagicMock()
-        results = run_scenario(scenario, config, ask_mock, "test_corpus")
+        ask_mock.ask.return_value = "Test user response"
+        results = run_scenario(scenario, config, ask_mock)
 
         assert len(results) == 1
         result = results[0]
         assert result.test_result.test_passed == BotTestResultStatus.NOK
-        assert (
-            "Test incomplete - reached max turns (2)" in result.test_result.description
-        )
+        assert "Konversation nicht abgeschlossen." in result.test_result.description
 
     def test_run_scenario_skipped(self):
         """Test skipped scenario"""
@@ -834,7 +890,7 @@ class TestScenarioExecution:
         )
 
         ask_mock = MagicMock()
-        results = run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = run_scenario(scenario, config, ask_mock)
 
         assert len(results) == 1
         result = results[0]
@@ -860,12 +916,15 @@ class TestScenarioExecution:
         )
 
         ask_mock = MagicMock()
-        results = run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = run_scenario(scenario, config, ask_mock)
 
         assert len(results) == 1
         result = results[0]
         assert result.test_result.test_passed == BotTestResultStatus.NOK
-        assert "Test failed with error: API Error" in result.test_result.description
+        assert (
+            "Fehler beim Verarbeiten des Szenarios: API Error"
+            in result.test_result.description
+        )
 
     def test_run_scenario_multiple_languages(self):
         """Test scenario with multiple languages"""
@@ -884,7 +943,7 @@ class TestScenarioExecution:
         )
 
         ask_mock = MagicMock()
-        results = run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = run_scenario(scenario, config, ask_mock)
 
         # Should return one result per language
         assert len(results) == 3
@@ -979,15 +1038,14 @@ class TestMainFunctionIntegration:
     ):
         """Test that main function creates results file in specified directory"""
         # Mock config with at least one scenario
-        mock_scenario = Scenario(
-            name="Test Scenario",
-            situation="Test situation"
-        )
+        mock_scenario = Scenario(name="Test Scenario", situation="Test situation")
         mock_config = Config(
             api=ApiConfig(base_url="https://test.com"),
             corpus_key="test_corpus",
             prompt_template="Test: {situation}",
-            scenarios=[mock_scenario],  # Add a scenario so safe_run_scenario gets called
+            scenarios=[
+                mock_scenario
+            ],  # Add a scenario so safe_run_scenario gets called
         )
         mock_load_config.return_value = mock_config
 
@@ -1059,7 +1117,7 @@ class TestSafeRunScenario:
         )
 
         ask_mock = MagicMock()
-        results = safe_run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = safe_run_scenario(scenario, config, ask_mock)
 
         assert len(results) == 1
         assert results[0].test_result.test_passed == BotTestResultStatus.SKIPPED
@@ -1079,7 +1137,7 @@ class TestSafeRunScenario:
         )
 
         ask_mock = MagicMock()
-        results = safe_run_scenario(scenario, config, ask_mock, "test_corpus")
+        results = safe_run_scenario(scenario, config, ask_mock)
 
         assert len(results) == 1
         result = results[0]

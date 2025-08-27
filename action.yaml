@@ -76,12 +76,8 @@ runs:
       run: |
         echo "📦 Installing dependencies..."
         pip install --upgrade pip
-        pip install boto3 pyyaml requests jinja2 pydantic
-        
-        # Install poemai utilities (assuming they're available)
-        # Note: You might need to adjust this based on how poemai_utils is distributed
-        pip install poemai-utils || echo "⚠️  poemai-utils not available via pip, attempting alternative installation..."
-        
+        pip install boto3 pyyaml requests jinja2 pydantic poemai-utils
+                
         echo "✅ Dependencies installed successfully"
 
     - name: Validate configuration file
