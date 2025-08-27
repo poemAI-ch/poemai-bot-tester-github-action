@@ -961,7 +961,7 @@ class TestMainFunctionIntegration:
     """Test main function integration"""
 
     @patch("bot_tester.load_config")
-    @patch("bot_tester.Ask")
+    @patch("bot_tester.AskLean")
     @patch("bot_tester.safe_run_scenario")
     @patch("bot_tester.argparse.ArgumentParser.parse_args")
     @patch("bot_tester.os.environ.get")
@@ -974,7 +974,7 @@ class TestMainFunctionIntegration:
         mock_load_config,
         tmp_path,
     ):
-        """Test that main function creates Ask object correctly with model from config"""
+        """Test that main function creates AskLean object correctly with model from config"""
         # Mock config with model field
         mock_config = Config(
             api=ApiConfig(base_url="https://test.com"),
@@ -1008,13 +1008,17 @@ class TestMainFunctionIntegration:
         # Import and run main
         from bot_tester import main
 
-        main()
+        with pytest.raises(SystemExit) as exc_info:
+            main()
 
-        # Verify Ask was created with correct model
+        # Verify it exits with code 0 (success) when no scenarios to run
+        assert exc_info.value.code == 0
+
+        # Verify AskLean was created with correct model
         mock_ask_class.assert_called_once()
         call_args = mock_ask_class.call_args
         assert call_args[1]["openai_api_key"] == "test_openai_key"
-        # The model should be accessed as an attribute from Ask.OPENAI_MODEL
+        # The model should be accessed as an attribute from AskLean.OPENAI_MODEL
         assert "model" in call_args[1]
 
         # Verify that test results file would be created in the temporary directory
@@ -1023,7 +1027,7 @@ class TestMainFunctionIntegration:
         assert expected_results_file.exists()
 
     @patch("bot_tester.load_config")
-    @patch("bot_tester.Ask")
+    @patch("bot_tester.AskLean")
     @patch("bot_tester.safe_run_scenario")
     @patch("bot_tester.argparse.ArgumentParser.parse_args")
     @patch("bot_tester.os.environ.get")
@@ -1059,7 +1063,7 @@ class TestMainFunctionIntegration:
         mock_args.conversation_url_template = None
         mock_parse_args.return_value = mock_args
 
-        # Mock environment and Ask
+        # Mock environment and AskLean
         mock_env_get.return_value = "test_openai_key"
         mock_ask_instance = Mock()
         mock_ask_class.return_value = mock_ask_instance
@@ -1083,7 +1087,11 @@ class TestMainFunctionIntegration:
         # Import and run main
         from bot_tester import main
 
-        main()
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        # Verify it exits with code 0 (success) when tests pass
+        assert exc_info.value.code == 0
 
         # Verify that test results file was created in the temporary directory
         results_file = tmp_path / "test_results.json"
@@ -1098,6 +1106,377 @@ class TestMainFunctionIntegration:
         assert "test_results" in results_data
         assert len(results_data["test_results"]) == 1
         assert results_data["test_results"][0]["test_name"] == "Test Result"
+
+    @patch("bot_tester.load_config")
+    @patch("bot_tester.AskLean")
+    @patch("bot_tester.safe_run_scenario")
+    @patch("bot_tester.argparse.ArgumentParser.parse_args")
+    @patch("bot_tester.os.environ.get")
+    def test_main_function_exit_code_with_failed_tests(
+        self,
+        mock_env_get,
+        mock_parse_args,
+        mock_safe_run,
+        mock_ask_class,
+        mock_load_config,
+        tmp_path,
+    ):
+        """Test that main function exits with code 1 when tests fail"""
+        # Mock config with test scenario
+        mock_scenario = Scenario(name="Test Scenario", situation="Test situation")
+        mock_config = Config(
+            api=ApiConfig(base_url="https://test.com"),
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            scenarios=[mock_scenario],
+        )
+        mock_load_config.return_value = mock_config
+
+        # Mock args
+        mock_args = Mock()
+        mock_args.config = "test.yaml"
+        mock_args.corpus_key = "test_corpus"
+        mock_args.results_dir = str(tmp_path)
+        mock_args.publish_s3_url = None
+        mock_args.debug_url_template = None
+        mock_args.conversation_url_template = None
+        mock_parse_args.return_value = mock_args
+
+        # Mock environment and Ask
+        mock_env_get.return_value = "test_openai_key"
+        mock_ask_instance = Mock()
+        mock_ask_class.return_value = mock_ask_instance
+
+        # Mock safe_run_scenario to return failed test results
+        failed_test_result = BotTestResultRecord(
+            test_name="Failed Test",
+            test_result=BotTestResult(
+                test_passed=BotTestResultStatus.NOK, description="Test failed"
+            ),
+            test_time="2023-01-01T00:00:00Z",
+            test_case_id="test_id",
+            test_case_description="Test description",
+            case_manager_id="cm_123",
+            managed_case_id="mc_456",
+            corpus_key="test_corpus",
+            test_case_language=LanaguageCode.de,
+        )
+        passed_test_result = BotTestResultRecord(
+            test_name="Passed Test",
+            test_result=BotTestResult(
+                test_passed=BotTestResultStatus.OK, description="Test passed"
+            ),
+            test_time="2023-01-01T00:00:00Z",
+            test_case_id="test_id2",
+            test_case_description="Test description",
+            case_manager_id="cm_124",
+            managed_case_id="mc_457",
+            corpus_key="test_corpus",
+            test_case_language=LanaguageCode.en,
+        )
+        skipped_test_result = BotTestResultRecord(
+            test_name="Skipped Test",
+            test_result=BotTestResult(
+                test_passed=BotTestResultStatus.SKIPPED, description="Test skipped"
+            ),
+            test_time="2023-01-01T00:00:00Z",
+            test_case_id="test_id3",
+            test_case_description="Test description",
+            case_manager_id="cm_125",
+            managed_case_id="mc_458",
+            corpus_key="test_corpus",
+            test_case_language=LanaguageCode.fr,
+        )
+        mock_safe_run.return_value = [
+            failed_test_result,
+            passed_test_result,
+            skipped_test_result,
+        ]
+
+        # Import and run main, expecting it to exit with code 1
+        from bot_tester import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        # Verify it exits with code 1 (failure) due to failed tests
+        assert exc_info.value.code == 1
+
+        # Verify the results file was created with the test results
+        results_file = tmp_path / "test_results.json"
+        assert results_file.exists()
+
+        # Verify the contents show mixed results
+        import json
+
+        with open(results_file) as f:
+            results_data = json.load(f)
+
+        assert len(results_data["test_results"]) == 3
+        assert results_data["test_results"][0]["test_name"] == "Failed Test"
+        assert results_data["test_results"][0]["test_result"]["test_passed"] == "NOK"
+        assert results_data["test_results"][1]["test_name"] == "Passed Test"
+        assert results_data["test_results"][1]["test_result"]["test_passed"] == "OK"
+        assert results_data["test_results"][2]["test_name"] == "Skipped Test"
+        assert (
+            results_data["test_results"][2]["test_result"]["test_passed"] == "SKIPPED"
+        )
+
+    @patch("bot_tester.load_config")
+    @patch("bot_tester.AskLean")
+    @patch("bot_tester.safe_run_scenario")
+    @patch("bot_tester.argparse.ArgumentParser.parse_args")
+    @patch("bot_tester.os.environ.get")
+    def test_main_function_exit_code_with_all_passed_tests(
+        self,
+        mock_env_get,
+        mock_parse_args,
+        mock_safe_run,
+        mock_ask_class,
+        mock_load_config,
+        tmp_path,
+    ):
+        """Test that main function exits with code 0 when all tests pass"""
+        # Mock config with test scenario
+        mock_scenario = Scenario(name="Test Scenario", situation="Test situation")
+        mock_config = Config(
+            api=ApiConfig(base_url="https://test.com"),
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            scenarios=[mock_scenario],
+        )
+        mock_load_config.return_value = mock_config
+
+        # Mock args
+        mock_args = Mock()
+        mock_args.config = "test.yaml"
+        mock_args.corpus_key = "test_corpus"
+        mock_args.results_dir = str(tmp_path)
+        mock_args.publish_s3_url = None
+        mock_args.debug_url_template = None
+        mock_args.conversation_url_template = None
+        mock_parse_args.return_value = mock_args
+
+        # Mock environment and Ask
+        mock_env_get.return_value = "test_openai_key"
+        mock_ask_instance = Mock()
+        mock_ask_class.return_value = mock_ask_instance
+
+        # Mock safe_run_scenario to return only successful test results
+        passed_test_result = BotTestResultRecord(
+            test_name="Passed Test",
+            test_result=BotTestResult(
+                test_passed=BotTestResultStatus.OK, description="Test passed"
+            ),
+            test_time="2023-01-01T00:00:00Z",
+            test_case_id="test_id",
+            test_case_description="Test description",
+            case_manager_id="cm_123",
+            managed_case_id="mc_456",
+            corpus_key="test_corpus",
+            test_case_language=LanaguageCode.de,
+        )
+        skipped_test_result = BotTestResultRecord(
+            test_name="Skipped Test",
+            test_result=BotTestResult(
+                test_passed=BotTestResultStatus.SKIPPED, description="Test skipped"
+            ),
+            test_time="2023-01-01T00:00:00Z",
+            test_case_id="test_id2",
+            test_case_description="Test description",
+            case_manager_id="cm_124",
+            managed_case_id="mc_457",
+            corpus_key="test_corpus",
+            test_case_language=LanaguageCode.en,
+        )
+        mock_safe_run.return_value = [passed_test_result, skipped_test_result]
+
+        # Import and run main, expecting it to exit with code 0
+        from bot_tester import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        # Verify it exits with code 0 (success) when no tests fail
+        assert exc_info.value.code == 0
+
+        # Verify the results file was created
+        results_file = tmp_path / "test_results.json"
+        assert results_file.exists()
+
+    @patch("bot_tester.load_config")
+    @patch("bot_tester.AskLean")
+    @patch("bot_tester.safe_run_scenario")
+    @patch("bot_tester.argparse.ArgumentParser.parse_args")
+    @patch("bot_tester.os.environ.get")
+    def test_main_function_exit_code_with_no_tests(
+        self,
+        mock_env_get,
+        mock_parse_args,
+        mock_safe_run,
+        mock_ask_class,
+        mock_load_config,
+        tmp_path,
+    ):
+        """Test that main function exits with code 0 when no tests are run"""
+        # Mock config with no scenarios
+        mock_config = Config(
+            api=ApiConfig(base_url="https://test.com"),
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            scenarios=[],  # No scenarios
+        )
+        mock_load_config.return_value = mock_config
+
+        # Mock args
+        mock_args = Mock()
+        mock_args.config = "test.yaml"
+        mock_args.corpus_key = "test_corpus"
+        mock_args.results_dir = str(tmp_path)
+        mock_args.publish_s3_url = None
+        mock_args.debug_url_template = None
+        mock_args.conversation_url_template = None
+        mock_parse_args.return_value = mock_args
+
+        # Mock environment and Ask
+        mock_env_get.return_value = "test_openai_key"
+        mock_ask_instance = Mock()
+        mock_ask_class.return_value = mock_ask_instance
+
+        # Mock safe_run_scenario to return empty results
+        mock_safe_run.return_value = []
+
+        # Import and run main, expecting it to exit with code 0
+        from bot_tester import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        # Verify it exits with code 0 (success) when no tests are run
+        assert exc_info.value.code == 0
+
+
+class TestCheckPromptGeneration:
+    """Test check prompt template rendering and JSON mode requirements"""
+
+    def test_check_prompt_rendering_with_json_mode(self):
+        """Test that check prompt is properly rendered and contains JSON requirements"""
+        import json
+
+        from jinja2 import Template
+
+        # Sample check template from the YAML config
+        check_template_str = """Du bist ein Qualitätsprüfer. Der Bot hat folgendes Gespräch geführt:
+{{ conversation_text | trim }}
+
+Das Profil des Ratsuchenden ist:
+{{ situation | trim }}
+
+------- PRÜFINSTRUKTIONEN --------
+
+{{check_instructions}}
+
+Achte auch darauf, dass der Bot in der korrekten Sprache ({{language}}) antwortet.
+Gib als Antwort eine Datenstruktur im JSON Format zurück, die besagt, ob der Bot den Test bestanden hat. Mache diese Aussage mit "OK" (Test bestanden) oder "NOK" (Test nicht bestanden). Gib auch eine kurze Beschreibung, warum der Test bestanden oder nicht bestanden wurde.
+
+WICHTIG: Deine Antwort muss eine gültige JSON Struktur sein!
+--------  ENDE PRÜFINSTRUKTIONEN --------
+
+Deine Antwort muss als JSON Instanz formatiert sein, welche dem untenstehenden
+JSON Schema entspricht.
+
+
+Beispiele: Für das Schema {"properties": {"foo": {"title": "Foo", "description":
+"a list of strings", "type": "array", "items": {"type": "string"}}}, "required":
+["foo"]}}
+
+ist das Objekt{"foo": ["bar", "baz"]} eine wohlgeformte Instanz des Schemas. Das
+Objekt {"properties": {"foo": ["bar", "baz"]}} ist nicht wohlgeformt.
+
+
+Hier ist das JSON Schema:
+
+```
+{{test_result_schema}}
+```"""
+
+        # Sample data that would be used in template rendering
+        conversation_text = """----------
+User:
+Hallo, ich bin der poemAI Bot Tester. Ich bin 70 Jahre alt, verheiratet und lebe mit meiner Frau zusammen.
+
+----------
+Assistant:
+Danke. Ich werde dir nun ein paar Fragen stellen und dir staatliche und sonstige Hilfen empfehlen."""
+
+        situation = """Du bist 70 Jahre alt, verheiratet und lebst mit deiner Frau zusammen. 
+Du hast keine Kinder und keine gesundheitlichen Probleme. 
+Du bist pensioniert und erhältst eine kleine AHV-Rente, aber das Geld reicht nicht aus.
+Du möchtest wissen, welche finanzielle Unterstützung dir zur Verfügung steht."""
+
+        check_instructions = """Prüfe, ob der Bot die Situation einer pensionierten Person korrekt erfasst hat.    
+Prüfe, ob der Bot Ergänzungsleistungen zur AHV empfiehlt, da dies die naheliegendste Unterstützung für eine Person in diesem Alter wäre.
+Der Bot soll freundlich und respektvoll bleiben."""
+
+        test_result_schema = json.dumps(BotTestResult.model_json_schema())
+        language = "German"
+
+        # Render the template
+        template = Template(check_template_str)
+        rendered_prompt = template.render(
+            conversation_text=conversation_text,
+            situation=situation,
+            check_instructions=check_instructions,
+            test_result_schema=test_result_schema,
+            language=language,
+        )
+
+        # Verify basic content is included
+        assert "Du bist ein Qualitätsprüfer" in rendered_prompt
+        assert conversation_text.strip() in rendered_prompt
+        assert situation.strip() in rendered_prompt
+        assert check_instructions.strip() in rendered_prompt
+        assert language in rendered_prompt
+
+        # Verify JSON mode requirements are met
+        json_mentions = rendered_prompt.upper().count("JSON")
+        assert (
+            json_mentions >= 3
+        ), f"Expected at least 3 mentions of 'JSON', found {json_mentions}"
+
+        # Verify specific JSON requirements for OpenAI JSON mode
+        assert "JSON Format" in rendered_prompt
+        assert "JSON Struktur" in rendered_prompt
+        assert "JSON Schema" in rendered_prompt
+
+        # Verify the schema is properly included
+        assert "test_passed" in rendered_prompt
+        assert "description" in rendered_prompt
+
+        print(f"✓ Check prompt contains {json_mentions} mentions of 'JSON'")
+        print(f"✓ Prompt length: {len(rendered_prompt)} characters")
+
+    def test_check_prompt_without_template_uses_fallback(self):
+        """Test that when no check_template is provided, fallback uses check_instructions directly"""
+        from jinja2 import Template
+
+        # This simulates what happens when cfg.check_template is None
+        check_instructions = """Check if bot understood the elderly person scenario.
+Verify bot recommended supplementary benefits (Ergänzungsleistungen).
+Ensure bot was friendly and respectful."""
+
+        # This is the fallback behavior when check_template is None
+        fallback_template = Template(check_instructions)
+        rendered = fallback_template.render(
+            conversation_text="Sample conversation",
+            situation="Sample situation",
+            check_instructions=check_instructions,
+            test_result_schema='{"type": "object"}',
+            language="German",
+        )
+
+        # The fallback should just be the check_instructions since it's a simple template
+        assert check_instructions == rendered
 
 
 class TestSafeRunScenario:

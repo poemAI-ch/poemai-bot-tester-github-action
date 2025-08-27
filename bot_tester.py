@@ -32,7 +32,7 @@ from poemai_utils.basic_types_utils import (
     replace_floats_with_decimal,
 )
 from poemai_utils.enum_utils import add_enum_attrs, add_enum_repr
-from poemai_utils.openai.ask import Ask
+from poemai_utils.openai.ask_lean import AskLean
 from poemai_utils.time_utils import current_time_iso
 from pydantic import BaseModel
 
@@ -334,6 +334,7 @@ class Config(BaseModel):
     test_set_title: Optional[str] = None
     debug_url_template: Optional[str] = None
     conversation_url_template: Optional[str] = None
+    run_check_with_json_mode: bool = False
 
 
 class BotTestResultStatus(str, Enum):
@@ -513,6 +514,12 @@ def send_user_message(url_base, case, headers, corpus_key, message):
     return r.json()
 
 
+def ask_with_string_prompt(ask_instance, prompt, **kwargs):
+    """Helper function to convert string prompt to messages format for AskLean"""
+    messages = [{"role": "user", "content": prompt}]
+    return ask_instance.ask(messages, **kwargs)
+
+
 def run_scenario(scn, cfg, ask):
     # Check if scenario should be skipped
     if scn.skip:
@@ -564,7 +571,7 @@ def run_scenario(scn, cfg, ask):
                 if cfg.prompt_template is not None
                 else None
             )
-            check_tmplate = (
+            check_template = (
                 Template(cfg.check_template) if cfg.check_template is not None else None
             )
             max_turns = (
@@ -600,7 +607,12 @@ def run_scenario(scn, cfg, ask):
                     language=language.language_name,
                 )
                 _logger.info("Prompt an LLM:\n%s", prompt)
-                reply = ask.ask(prompt)
+                response = ask_with_string_prompt(ask, prompt)
+                reply = (
+                    response.choices[0].message.content
+                    if hasattr(response, "choices")
+                    else str(response)
+                )
                 _logger.info("Tester antwortet: %s", reply.strip())
 
                 send_user_message(url_base, case_object, headers, cfg.corpus_key, reply)
@@ -634,16 +646,56 @@ def run_scenario(scn, cfg, ask):
                 conv_text = format_conversation(conv)
 
                 test_result_schema = json.dumps(BotTestResult.model_json_schema())
-                check_template = Template(scn.check_instructions)
-                check_prompt = check_template.render(
-                    conversation_text=conv_text,
-                    situation=scn.situation,
-                    check_instructions=scn.check_instructions,
-                    test_result_schema=test_result_schema,
-                    language=language.language_name,
-                )
+
+                # Use the proper check template from config, not just the instructions
+                if check_template is not None:
+                    check_prompt = check_template.render(
+                        conversation_text=conv_text,
+                        situation=scn.situation,
+                        check_instructions=scn.check_instructions,
+                        test_result_schema=test_result_schema,
+                        language=language.language_name,
+                    )
+                else:
+                    # Fallback to just using check_instructions as a simple template
+                    check_instructions_template = Template(scn.check_instructions)
+                    check_prompt = check_instructions_template.render(
+                        conversation_text=conv_text,
+                        situation=scn.situation,
+                        check_instructions=scn.check_instructions,
+                        test_result_schema=test_result_schema,
+                        language=language.language_name,
+                    )
+
                 _logger.info("Check-Prompt an LLM:\n%s", check_prompt)
-                result = ask.ask(check_prompt)
+
+                # Use JSON mode if configured to ensure reliable parsing
+                if cfg.run_check_with_json_mode:
+                    try:
+                        response = ask_with_string_prompt(
+                            ask, check_prompt, response_format={"type": "json_object"}
+                        )
+                        # Extract content from AskLean response
+                        result = response.choices[0].message.content
+                    except (TypeError, AttributeError) as e:
+                        # Fallback if Ask class doesn't support response_format parameter or response format differs
+                        _logger.warning(
+                            f"Ask class doesn't support JSON mode or response format differs: {e}, falling back to regular mode"
+                        )
+                        response = ask_with_string_prompt(ask, check_prompt)
+                        result = (
+                            response.choices[0].message.content
+                            if hasattr(response, "choices")
+                            else str(response)
+                        )
+                else:
+                    response = ask_with_string_prompt(ask, check_prompt)
+                    result = (
+                        response.choices[0].message.content
+                        if hasattr(response, "choices")
+                        else str(response)
+                    )
+
                 try:
 
                     test_result = BotTestResult(**json.loads(result))
@@ -915,8 +967,8 @@ def main():
     results_dir = Path(args.results_dir) if args.results_dir else Path(".")
 
     cfg = load_config(args.config)
-    ask = Ask(
-        model=getattr(Ask.OPENAI_MODEL, cfg.model),
+    ask = AskLean(
+        model=getattr(AskLean.OPENAI_MODEL, cfg.model),
         openai_api_key=os.environ.get("OPENAI_API_KEY"),
     )
 
@@ -963,12 +1015,17 @@ def main():
         )
 
     # Print summary
+    failed_tests = 0
+    total_tests = 0
     for tr in test_results:
+        total_tests += 1
         status = (
             "✅"
             if tr.test_result.test_passed == BotTestResultStatus.OK
             else "❌" if tr.test_result.test_passed == BotTestResultStatus.NOK else "⏭️"
         )
+        if tr.test_result.test_passed == BotTestResultStatus.NOK:
+            failed_tests += 1
         _logger.info(
             f"{status} {tr.test_name} ({tr.test_case_language}): {tr.test_result.description}"
         )
@@ -977,6 +1034,28 @@ def main():
         "All scenarios completed. Results saved to %s",
         test_results_filename,
     )
+
+    # Print final summary
+    passed_tests = sum(
+        1 for tr in test_results if tr.test_result.test_passed == BotTestResultStatus.OK
+    )
+    skipped_tests = sum(
+        1
+        for tr in test_results
+        if tr.test_result.test_passed == BotTestResultStatus.SKIPPED
+    )
+
+    _logger.info(
+        f"Test Summary: {passed_tests} passed, {failed_tests} failed, {skipped_tests} skipped, {total_tests} total"
+    )
+
+    # Exit with non-zero code if any tests failed (for GitHub Actions)
+    if failed_tests > 0:
+        _logger.error(f"❌ {failed_tests} test(s) failed. Exiting with error code 1.")
+        exit(1)
+    else:
+        _logger.info("✅ All tests passed!")
+        exit(0)
 
 
 if __name__ == "__main__":
