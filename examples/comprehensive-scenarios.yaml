@@ -1,0 +1,123 @@
+# Example Bot Test Configuration
+
+api:
+  base_url: "https://api.staging.poemai.ch"
+
+corpus_key: "example-corpus"
+test_set_title: "Example Bot Test Suite"
+
+# Template for generating conversation prompts
+prompt_template: |
+  You are testing a chatbot in a specific scenario. 
+  Situation: {situation}
+  Please interact naturally to test the bot's capabilities.
+
+# Global template for AI-powered evaluation
+check_template: |
+  Evaluate if this chatbot conversation successfully addresses the given situation.
+  
+  Situation: "{situation}"
+  
+  Conversation:
+  {conversation}
+  
+  Evaluation Instructions: {check_instructions}
+  
+  Please respond with either:
+  - SUCCESS: [brief explanation of why the conversation was successful]
+  - FAILURE: [brief explanation of what went wrong or what was missing]
+
+scenarios:
+  # Basic functionality tests
+  - name: "Welcome and Greeting"
+    situation: "Start a conversation with a simple greeting and ask what the bot can help with"
+    check_instructions: "The bot should respond politely, acknowledge the greeting, and provide information about its capabilities or ask how it can help."
+    max_turns: 8
+    scenario_languages: ["de", "en"]
+
+  - name: "Information Request - General"
+    situation: "Ask for general information about available services or help topics"
+    check_instructions: "The bot should provide clear information about available services or guide the user to relevant resources."
+    max_turns: 10
+    scenario_languages: ["de", "en", "fr"]
+
+  - name: "Information Request - Specific"
+    situation: "Ask a specific question about a particular service or topic that the bot should know about"
+    check_instructions: "The bot should provide accurate, specific information or explain how to get the needed information."
+    max_turns: 12
+    scenario_languages: ["de"]
+
+  # Language-specific tests
+  - name: "German Language Complex Query"
+    situation: "Stelle eine komplexe Frage auf Deutsch über die verfügbaren Dienstleistungen und bitte um detaillierte Informationen"
+    check_instructions: "Der Bot sollte auf Deutsch antworten, die komplexe Anfrage verstehen und hilfreiche, detaillierte Informationen bereitstellen."
+    max_turns: 15
+    scenario_languages: ["de"]
+
+  - name: "English Language Support Request"
+    situation: "Ask for help in English with a specific problem that requires step-by-step guidance"
+    check_instructions: "The bot should respond in English, understand the support request, and provide clear step-by-step guidance or appropriate referral."
+    max_turns: 15
+    scenario_languages: ["en"]
+
+  # Edge cases and error handling
+  - name: "Unclear Request"
+    situation: "Make an unclear or ambiguous request to test how the bot handles uncertainty"
+    check_instructions: "The bot should ask clarifying questions or explain what additional information it needs to help effectively."
+    max_turns: 10
+    scenario_languages: ["de", "en"]
+
+  - name: "Out of Scope Request"
+    situation: "Ask about something that is likely outside the bot's knowledge or capabilities"
+    check_instructions: "The bot should politely explain its limitations and either redirect to appropriate resources or suggest alternative ways to get help."
+    max_turns: 8
+    scenario_languages: ["de"]
+
+  # Multi-turn conversation tests
+  - name: "Multi-Step Process"
+    situation: "Initiate a conversation that requires multiple steps or follow-up questions to complete"
+    check_instructions: "The bot should guide the user through the multi-step process, maintain context between turns, and successfully complete or appropriately conclude the interaction."
+    max_turns: 20
+    scenario_languages: ["de", "en"]
+
+  - name: "Context Switching"
+    situation: "Start with one topic, then switch to a different but related topic during the conversation"
+    check_instructions: "The bot should handle the topic switch gracefully, maintain relevant context where appropriate, and provide helpful responses for both topics."
+    max_turns: 18
+    scenario_languages: ["de"]
+
+  # Custom evaluation template example
+  - name: "Emotional Support Response"
+    situation: "Express frustration or concern about a problem and seek help"
+    check_template: |
+      Evaluate this conversation where a user expressed frustration or concern:
+      
+      Situation: {situation}
+      
+      Conversation:
+      {conversation}
+      
+      Evaluation criteria:
+      1. Did the bot acknowledge the user's emotional state appropriately?
+      2. Did the bot provide helpful, empathetic responses?
+      3. Did the bot offer concrete assistance or appropriate referrals?
+      4. Was the tone professional yet understanding?
+      
+      Respond with SUCCESS if the bot handled the emotional aspect well and provided appropriate support,
+      or FAILURE if the bot was insensitive, unhelpful, or missed important emotional cues.
+    max_turns: 12
+    scenario_languages: ["de", "en"]
+
+  # Performance and stress tests
+  - name: "Rapid Fire Questions"
+    situation: "Ask several quick questions in succession to test response handling"
+    check_instructions: "The bot should handle multiple questions appropriately, either by answering each one or by organizing the response in a helpful way."
+    max_turns: 8
+    scenario_languages: ["de"]
+
+  # Disabled test example
+  - name: "Future Feature Test"
+    situation: "Test a feature that isn't implemented yet"
+    check_instructions: "This test is disabled until the feature is ready"
+    skip: true
+    scenario_languages: ["de"]

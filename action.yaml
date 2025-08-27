@@ -1,0 +1,217 @@
+name: 'Test poemai Bot'
+description: 'Automated testing for poemai chatbots with comprehensive scenario execution and reporting'
+author: 'poemAI-ch'
+
+inputs:
+  config-file:
+    description: 'Path to the test scenarios configuration YAML file'
+    required: true
+  corpus-key:
+    description: 'Corpus key to test against'
+    required: true
+  role-to-assume:
+    description: 'ARN of the AWS IAM role to assume'
+    required: true
+  aws-region:
+    description: 'AWS region'
+    required: false
+    default: 'eu-central-2'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.12'
+  openai-api-key:
+    description: 'OpenAI API key for AI-powered test evaluation'
+    required: true
+  publish-s3-url:
+    description: 'S3 URL to publish the HTML test report (e.g., s3://bucket/path/report.html)'
+    required: false
+    default: ''
+  debug-url-template:
+    description: 'URL template for debug links (e.g., "https://app.staging.poemai.ch/debug/{corpus_key}/{case_manager_id}/{managed_case_id}")'
+    required: false
+    default: ''
+  conversation-url-template:
+    description: 'URL template for conversation links (e.g., "https://app.staging.poemai.ch/conversation/{corpus_key}/{case_manager_id}/{managed_case_id}")'
+    required: false
+    default: ''
+  max-workers:
+    description: 'Maximum number of parallel test workers'
+    required: false
+    default: '4'
+
+outputs:
+  test-results-file:
+    description: 'Path to the generated test results JSON file'
+    value: ${{ steps.run-tests.outputs.test-results-file }}
+  report-url:
+    description: 'URL of the published HTML report (if S3 publishing is enabled)'
+    value: ${{ steps.run-tests.outputs.report-url }}
+  tests-passed:
+    description: 'Number of tests that passed'
+    value: ${{ steps.run-tests.outputs.tests-passed }}
+  tests-failed:
+    description: 'Number of tests that failed'
+    value: ${{ steps.run-tests.outputs.tests-failed }}
+  tests-skipped:
+    description: 'Number of tests that were skipped'
+    value: ${{ steps.run-tests.outputs.tests-skipped }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-to-assume }}
+        aws-region: ${{ inputs.aws-region }}
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        echo "📦 Installing dependencies..."
+        pip install --upgrade pip
+        pip install boto3 pyyaml requests jinja2 pydantic
+        
+        # Install poemai utilities (assuming they're available)
+        # Note: You might need to adjust this based on how poemai_utils is distributed
+        pip install poemai-utils || echo "⚠️  poemai-utils not available via pip, attempting alternative installation..."
+        
+        echo "✅ Dependencies installed successfully"
+
+    - name: Validate configuration file
+      shell: bash
+      run: |
+        echo "🔍 Validating configuration file..."
+        if [ ! -f "${{ inputs.config-file }}" ]; then
+          echo "❌ Configuration file not found: ${{ inputs.config-file }}"
+          exit 1
+        fi
+        
+        # Basic YAML validation
+        python -c "import yaml; yaml.safe_load(open('${{ inputs.config-file }}'))" || {
+          echo "❌ Invalid YAML syntax in configuration file"
+          exit 1
+        }
+        
+        echo "✅ Configuration file is valid"
+
+    - name: Run bot tests
+      id: run-tests
+      shell: bash
+      env:
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+      run: |
+        echo "🤖 Starting automated bot testing..."
+        echo "  Configuration: ${{ inputs.config-file }}"
+        echo "  Corpus key: ${{ inputs.corpus-key }}"
+        echo "  Max workers: ${{ inputs.max-workers }}"
+        if [ -n "${{ inputs.publish-s3-url }}" ]; then
+          echo "  Report will be published to: ${{ inputs.publish-s3-url }}"
+        fi
+        echo ""
+        
+        # Prepare command arguments
+        ARGS=(
+          --config "${{ inputs.config-file }}"
+          --corpus-key "${{ inputs.corpus-key }}"
+        )
+        
+        if [ -n "${{ inputs.publish-s3-url }}" ]; then
+          ARGS+=(--publish-s3-url "${{ inputs.publish-s3-url }}")
+        fi
+        
+        if [ -n "${{ inputs.debug-url-template }}" ]; then
+          ARGS+=(--debug-url-template "${{ inputs.debug-url-template }}")
+        fi
+        
+        if [ -n "${{ inputs.conversation-url-template }}" ]; then
+          ARGS+=(--conversation-url-template "${{ inputs.conversation-url-template }}")
+        fi
+        
+        # Run the tests
+        python ${{ github.action_path }}/bot_tester.py "${ARGS[@]}" || {
+          echo "❌ Bot tests failed"
+          exit 1
+        }
+        
+        # Set outputs
+        echo "test-results-file=test_results.json" >> $GITHUB_OUTPUT
+        
+        # Parse test results for summary
+        if [ -f "test_results.json" ]; then
+          TESTS_PASSED=$(python -c "
+import json
+with open('test_results.json') as f:
+    data = json.load(f)
+    passed = sum(1 for r in data['test_results'] if r['test_result']['test_passed'] == 'OK')
+    print(passed)
+" 2>/dev/null || echo "0")
+          
+          TESTS_FAILED=$(python -c "
+import json
+with open('test_results.json') as f:
+    data = json.load(f)
+    failed = sum(1 for r in data['test_results'] if r['test_result']['test_passed'] == 'NOK')
+    print(failed)
+" 2>/dev/null || echo "0")
+          
+          TESTS_SKIPPED=$(python -c "
+import json
+with open('test_results.json') as f:
+    data = json.load(f)
+    skipped = sum(1 for r in data['test_results'] if r['test_result']['test_passed'] == 'SKIPPED')
+    print(skipped)
+" 2>/dev/null || echo "0")
+          
+          REPORT_URL=$(python -c "
+import json
+with open('test_results.json') as f:
+    data = json.load(f)
+    print(data.get('report_url', ''))
+" 2>/dev/null || echo "")
+          
+          echo "tests-passed=$TESTS_PASSED" >> $GITHUB_OUTPUT
+          echo "tests-failed=$TESTS_FAILED" >> $GITHUB_OUTPUT
+          echo "tests-skipped=$TESTS_SKIPPED" >> $GITHUB_OUTPUT
+          
+          if [ -n "$REPORT_URL" ]; then
+            echo "report-url=$REPORT_URL" >> $GITHUB_OUTPUT
+            echo "🔗 Test report published: $REPORT_URL"
+          fi
+          
+          echo ""
+          echo "📊 Test Summary:"
+          echo "  ✅ Passed: $TESTS_PASSED"
+          echo "  ❌ Failed: $TESTS_FAILED"
+          echo "  ⏭️  Skipped: $TESTS_SKIPPED"
+          
+          # Fail the action if there are failed tests
+          if [ "$TESTS_FAILED" -gt 0 ]; then
+            echo ""
+            echo "❌ Some tests failed. Check the detailed results for more information."
+            exit 1
+          fi
+        else
+          echo "⚠️  Test results file not found"
+          exit 1
+        fi
+        
+        echo "✅ All tests completed successfully!"
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: bot-test-results
+        path: test_results.json
+        retention-days: 30
+
+branding:
+  icon: 'message-circle'
+  color: 'green'

@@ -1,0 +1,35 @@
+# Simple Bot Test Configuration
+
+api:
+  base_url: "https://api.staging.poemai.ch"
+
+corpus_key: "simple-test-corpus"
+test_set_title: "Simple Bot Tests"
+
+prompt_template: "Test scenario: {situation}"
+
+check_template: |
+  Did this conversation handle the situation successfully?
+  Situation: {situation}
+  Conversation: {conversation}
+  
+  Respond with SUCCESS or FAILURE and explain why.
+
+scenarios:
+  - name: "Basic Greeting"
+    situation: "Say hello and ask what the bot can do"
+    check_instructions: "Bot should greet back and explain its purpose"
+    max_turns: 5
+    scenario_languages: ["de"]
+
+  - name: "Simple Question"
+    situation: "Ask a basic question about available help"
+    check_instructions: "Bot should provide helpful information"
+    max_turns: 8
+    scenario_languages: ["de", "en"]
+
+  - name: "Thank You"
+    situation: "Thank the bot for its help"
+    check_instructions: "Bot should acknowledge thanks appropriately"
+    max_turns: 3
+    scenario_languages: ["de"]

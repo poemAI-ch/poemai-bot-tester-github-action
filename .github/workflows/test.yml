@@ -1,0 +1,78 @@
+name: Test Bot Tester Action
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: |
+          pytest tests/ -v --tb=short
+
+      - name: Test script directly
+        run: |
+          python bot_tester.py --help
+
+  validate-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Validate action.yaml
+        run: |
+          # Basic YAML validation
+          python -c "import yaml; yaml.safe_load(open('action.yaml'))"
+          
+          # Check that all required files exist
+          test -f bot_tester.py
+          test -f requirements.txt
+          test -f README.md
+          
+          echo "✅ All action files are present and valid"
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          
+      - name: Install linting tools
+        run: |
+          pip install black flake8 isort
+          
+      - name: Check code formatting with black
+        run: |
+          black --check --diff bot_tester.py tests/
+          
+      - name: Check imports with isort
+        run: |
+          isort --check-only --diff bot_tester.py tests/
+          
+      - name: Lint with flake8
+        run: |
+          flake8 bot_tester.py tests/ --max-line-length=100 --extend-ignore=E203,W503
