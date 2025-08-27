@@ -13,62 +13,8 @@ log() {
 parse_test_results() {
     local results_file="$1"
     
-    if [ ! -f "$results_file" ]; then
-        log "⚠️  Test results file not found: $results_file"
-        return 1
-    fi
-    
-    # Parse results using Python
-    python3 << EOF "$results_file"
-import json
-import sys
-import os
-
-try:
-    with open(sys.argv[1]) as f:
-        data = json.load(f)
-    
-    # Count test results
-    test_results = data.get('test_results', [])
-    passed = sum(1 for r in test_results if r['test_result']['test_passed'] == 'OK')
-    failed = sum(1 for r in test_results if r['test_result']['test_passed'] == 'NOK')
-    skipped = sum(1 for r in test_results if r['test_result']['test_passed'] == 'SKIPPED')
-    
-    # Get report URL if available
-    report_url = data.get('report_url', '')
-    
-    # Set GitHub Actions outputs
-    github_output = os.environ.get('GITHUB_OUTPUT', '')
-    if github_output:
-        with open(github_output, 'a') as f:
-            f.write(f"tests-passed={passed}\n")
-            f.write(f"tests-failed={failed}\n")
-            f.write(f"tests-skipped={skipped}\n")
-            f.write(f"test-results-file={sys.argv[1]}\n")
-            if report_url:
-                f.write(f"report-url={report_url}\n")
-    
-    # Print summary
-    print(f"📊 Test Summary:")
-    print(f"  ✅ Passed: {passed}")
-    print(f"  ❌ Failed: {failed}")
-    print(f"  ⏭️  Skipped: {skipped}")
-    
-    if report_url:
-        print(f"🔗 Test report published: {report_url}")
-    
-    # Exit with error code if there are failed tests
-    if failed > 0:
-        print("")
-        print("❌ Some tests failed. Check the detailed results for more information.")
-        sys.exit(1)
-    
-    print("✅ All tests completed successfully!")
-
-except Exception as e:
-    print(f"❌ Error parsing test results: {e}")
-    sys.exit(1)
-EOF
+    # Call the separate Python script
+    python3 "$SCRIPT_DIR/parse_results.py" "$results_file"
 }
 
 # Main execution
