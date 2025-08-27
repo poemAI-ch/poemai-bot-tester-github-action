@@ -84,6 +84,7 @@ class TestConfigModels:
         config_data = {
             "api": {"base_url": "https://api.example.com"},
             "corpus_key": "test_corpus",
+            "model": "GPT_4_o_CHATGPT_LATEST",
             "prompt_template": "Test template",
             "scenarios": [
                 {
@@ -94,7 +95,21 @@ class TestConfigModels:
         }
         config = Config(**config_data)
         assert config.corpus_key == "test_corpus"
+        assert config.model == "GPT_4_o_CHATGPT_LATEST"
         assert len(config.scenarios) == 1
+
+    def test_config_model_defaults(self):
+        """Test config model with default values"""
+        config_data = {
+            "api": {"base_url": "https://api.example.com"},
+            "corpus_key": "test_corpus",
+            "prompt_template": "Test template",
+            "scenarios": [],
+        }
+        config = Config(**config_data)
+        assert config.model == "GPT_4_o_CHATGPT_LATEST"  # Default value
+        assert config.max_turns == 20  # Default value
+        assert config.test_set_title is None  # Default value
 
     def test_config_model_invalid(self):
         """Test invalid config model"""
@@ -129,6 +144,7 @@ class TestConfigLoading:
 api:
   base_url: "https://api.example.com"
 corpus_key: "test_corpus"
+model: "GPT_4_o_CHATGPT_LATEST"
 prompt_template: "Test template"
 test_set_title: "Test Suite"
 scenarios:
@@ -142,6 +158,7 @@ scenarios:
         with patch("builtins.open", mock_open(read_data=yaml_content)):
             config = load_config("test.yaml")
             assert config.corpus_key == "test_corpus"
+            assert config.model == "GPT_4_o_CHATGPT_LATEST"
             assert config.test_set_title == "Test Suite"
             assert len(config.scenarios) == 2
             assert config.scenarios[0].max_turns == 15
@@ -159,7 +176,8 @@ scenarios:
         incomplete_yaml = """
 api:
   base_url: "https://api.example.com"
-# Missing corpus_key and prompt_template
+# Missing corpus_key and prompt_template but model is included
+model: "GPT_4_o_CHATGPT_LATEST"
 scenarios: []
 """
         with patch("builtins.open", mock_open(read_data=incomplete_yaml)):
@@ -878,6 +896,150 @@ class TestScenarioExecution:
         # All should be skipped
         for result in results:
             assert result.test_result.test_passed == BotTestResultStatus.SKIPPED
+
+
+class TestMainFunctionIntegration:
+    """Test main function integration"""
+
+    @patch("bot_tester.load_config")
+    @patch("bot_tester.Ask")
+    @patch("bot_tester.safe_run_scenario")
+    @patch("bot_tester.argparse.ArgumentParser.parse_args")
+    @patch("bot_tester.os.environ.get")
+    def test_main_function_ask_creation(
+        self,
+        mock_env_get,
+        mock_parse_args,
+        mock_safe_run,
+        mock_ask_class,
+        mock_load_config,
+        tmp_path,
+    ):
+        """Test that main function creates Ask object correctly with model from config"""
+        # Mock config with model field
+        mock_config = Config(
+            api=ApiConfig(base_url="https://test.com"),
+            corpus_key="test_corpus",
+            model="GPT_4_o_CHATGPT_LATEST",
+            prompt_template="Test: {situation}",
+            scenarios=[],
+        )
+        mock_load_config.return_value = mock_config
+
+        # Mock args with temporary directory
+        mock_args = Mock()
+        mock_args.config = "test.yaml"
+        mock_args.corpus_key = "test_corpus"
+        mock_args.results_dir = str(tmp_path)  # Use pytest tmp_path fixture
+        mock_args.publish_s3_url = None
+        mock_args.debug_url_template = None
+        mock_args.conversation_url_template = None
+        mock_parse_args.return_value = mock_args
+
+        # Mock environment
+        mock_env_get.return_value = "test_openai_key"
+
+        # Mock Ask instance
+        mock_ask_instance = Mock()
+        mock_ask_class.return_value = mock_ask_instance
+
+        # Mock safe_run_scenario to return empty results
+        mock_safe_run.return_value = []
+
+        # Import and run main
+        from bot_tester import main
+
+        main()
+
+        # Verify Ask was created with correct model
+        mock_ask_class.assert_called_once()
+        call_args = mock_ask_class.call_args
+        assert call_args[1]["openai_api_key"] == "test_openai_key"
+        # The model should be accessed as an attribute from Ask.OPENAI_MODEL
+        assert "model" in call_args[1]
+
+        # Verify that test results file would be created in the temporary directory
+        expected_results_file = tmp_path / "test_results.json"
+        # The file should exist after running main (mocked scenario returns empty results)
+        assert expected_results_file.exists()
+
+    @patch("bot_tester.load_config")
+    @patch("bot_tester.Ask")
+    @patch("bot_tester.safe_run_scenario")
+    @patch("bot_tester.argparse.ArgumentParser.parse_args")
+    @patch("bot_tester.os.environ.get")
+    def test_main_function_results_file_output(
+        self,
+        mock_env_get,
+        mock_parse_args,
+        mock_safe_run,
+        mock_ask_class,
+        mock_load_config,
+        tmp_path,
+    ):
+        """Test that main function creates results file in specified directory"""
+        # Mock config with at least one scenario
+        mock_scenario = Scenario(
+            name="Test Scenario",
+            situation="Test situation"
+        )
+        mock_config = Config(
+            api=ApiConfig(base_url="https://test.com"),
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            scenarios=[mock_scenario],  # Add a scenario so safe_run_scenario gets called
+        )
+        mock_load_config.return_value = mock_config
+
+        # Mock args with temporary directory
+        mock_args = Mock()
+        mock_args.config = "test.yaml"
+        mock_args.corpus_key = "test_corpus"
+        mock_args.results_dir = str(tmp_path)
+        mock_args.publish_s3_url = None
+        mock_args.debug_url_template = None
+        mock_args.conversation_url_template = None
+        mock_parse_args.return_value = mock_args
+
+        # Mock environment and Ask
+        mock_env_get.return_value = "test_openai_key"
+        mock_ask_instance = Mock()
+        mock_ask_class.return_value = mock_ask_instance
+
+        # Mock safe_run_scenario to return a test result
+        mock_test_result = BotTestResultRecord(
+            test_name="Test Result",
+            test_result=BotTestResult(
+                test_passed=BotTestResultStatus.OK, description="Test passed"
+            ),
+            test_time="2023-01-01T00:00:00Z",
+            test_case_id="test_id",
+            test_case_description="Test description",
+            case_manager_id="cm_123",
+            managed_case_id="mc_456",
+            corpus_key="test_corpus",
+            test_case_language=LanaguageCode.de,
+        )
+        mock_safe_run.return_value = [mock_test_result]
+
+        # Import and run main
+        from bot_tester import main
+
+        main()
+
+        # Verify that test results file was created in the temporary directory
+        results_file = tmp_path / "test_results.json"
+        assert results_file.exists()
+
+        # Verify the contents of the results file
+        import json
+
+        with open(results_file) as f:
+            results_data = json.load(f)
+
+        assert "test_results" in results_data
+        assert len(results_data["test_results"]) == 1
+        assert results_data["test_results"][0]["test_name"] == "Test Result"
 
 
 class TestSafeRunScenario:

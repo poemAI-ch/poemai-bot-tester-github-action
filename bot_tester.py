@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from unittest import result
 import uuid
 import zoneinfo
 from collections import defaultdict
@@ -24,12 +25,9 @@ import boto3
 import requests
 import yaml
 from jinja2 import Template
-from poemai_utils.basic_types_utils import (
-    any_to_bool,
-    linebreak,
-    replace_decimal_with_string,
-    replace_floats_with_decimal,
-)
+from poemai_utils.basic_types_utils import (any_to_bool, linebreak,
+                                            replace_decimal_with_string,
+                                            replace_floats_with_decimal)
 from poemai_utils.enum_utils import add_enum_attrs, add_enum_repr
 from poemai_utils.openai.ask import Ask
 from poemai_utils.time_utils import current_time_iso
@@ -325,6 +323,7 @@ class Scenario(BaseModel):
 class Config(BaseModel):
     api: ApiConfig
     corpus_key: str
+    model: str = "GPT_4_o_CHATGPT_LATEST"
     prompt_template: str
     check_template: str = None
     max_turns: int = 20
@@ -861,6 +860,12 @@ def main():
         help="Corpus key to test against",
     )
     p.add_argument(
+        "--results-dir",
+        "-r",
+        required=False,
+        help="Directory to save test results",
+    )
+    p.add_argument(
         "--publish-s3-url",
         "-p",
         required=False,
@@ -879,9 +884,11 @@ def main():
 
     args = p.parse_args()
 
+    results_dir = Path(args.results_dir) if args.results_dir else Path(".")
+
     cfg = load_config(args.config)
     ask = Ask(
-        model=getattr(Ask.OPENAI_MODEL, cfg.get("model", "GPT_4_o_CHATGPT_LATEST")),
+        model=getattr(Ask.OPENAI_MODEL, cfg.model),
         openai_api_key=os.environ.get("OPENAI_API_KEY"),
     )
 
@@ -917,10 +924,10 @@ def main():
 
     # Save results to JSON file
     test_results_filename = f"test_results.json"
-    with open(test_results_filename, "w") as f:
+    with open(results_dir / test_results_filename, "w") as f:
         f.write(
             json.dumps(
-                test_results_report.dict(),
+                test_results_report.model_dump(),
                 default=str,
                 ensure_ascii=False,
                 indent=4,
