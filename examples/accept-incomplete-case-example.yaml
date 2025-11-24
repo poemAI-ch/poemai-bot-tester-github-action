@@ -1,0 +1,84 @@
+api:
+  base_url: "https://app.staging.poemai.ch/api/auth_proxy/v1/internal/api/assistant/v2/public"
+
+corpus_key: "YOUR_CORPUS_KEY"
+model: "GPT_4_o_CHATGPT_LATEST"
+
+# Template for generating user messages during conversation
+prompt_template: |
+  You are simulating a user in the following situation:
+  {{ situation }}
+
+  Current conversation:
+  {{ conversation_text }}
+
+  Respond naturally as this user would in {{ language }}. Keep responses brief and realistic.
+
+# Template for checking conversation quality
+check_template: |
+  You are evaluating a chatbot conversation.
+
+  Situation: {{ situation }}
+
+  Conversation:
+  {{ conversation_text }}
+
+  Case completion status: {{ case_completion_status }}
+
+  Check instructions: {{ check_instructions }}
+
+  Provide your evaluation as JSON matching this schema:
+  {{ test_result_schema }}
+
+max_turns: 10
+
+scenarios:
+  # Example 1: Scenario that must complete
+  - name: "Complete Case Required"
+    situation: "User wants to book an appointment"
+    max_turns: 5
+    check_instructions: |
+      Verify that:
+      1. The bot collected necessary information (name, date, time)
+      2. An appointment was successfully booked
+      3. The bot confirmed the booking details
+    # accept_incomplete_case is False by default
+    # If case doesn't complete, test immediately fails
+
+  # Example 2: Scenario that accepts incomplete cases
+  - name: "Information Gathering OK if Incomplete"
+    situation: "User asks general questions about services"
+    max_turns: 5
+    accept_incomplete_case: true  # NEW FEATURE
+    check_instructions: |
+      Even if the case didn't complete (status: {{ case_completion_status }}),
+      verify that:
+      1. The bot provided accurate information
+      2. The bot was helpful and polite
+      3. The conversation made meaningful progress
+
+      Note: It's OK if the case isn't formally completed, as long as the
+      information exchange was valuable.
+
+  # Example 3: Incomplete case accepted without check instructions
+  - name: "Exploratory Conversation"
+    situation: "User is browsing available options"
+    max_turns: 8
+    accept_incomplete_case: true
+    # No check_instructions - will pass as long as conversation runs
+    # Useful for testing bot availability and basic functionality
+
+  # Example 4: LLM can still fail an incomplete case
+  - name: "Must Provide Core Info Even if Incomplete"
+    situation: "User needs urgent help with their account"
+    max_turns: 3
+    accept_incomplete_case: true
+    check_instructions: |
+      Case status: {{ case_completion_status }}
+
+      Even if incomplete, the bot MUST have:
+      1. Acknowledged the urgency
+      2. Provided at least one helpful piece of information
+      3. Offered a clear next step
+
+      If these basics are missing, mark as NOK even with accept_incomplete_case=true.

@@ -29,10 +29,10 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Test poemai Bot
         uses: poemAI-ch/poemai-bot-tester-github-action@v1
         with:
@@ -100,12 +100,12 @@ prompt_template: "You are testing a chatbot. {situation}"
 # Global check template for AI evaluation
 check_template: |
   Evaluate if this conversation successfully addresses the situation: "{situation}"
-  
+
   Conversation:
   {conversation}
-  
+
   Instructions: {check_instructions}
-  
+
   Respond with SUCCESS if the bot handled the situation appropriately, or FAILURE with explanation.
 
 scenarios:
@@ -114,13 +114,13 @@ scenarios:
     check_instructions: "Bot should respond politely and offer assistance"
     max_turns: 10
     scenario_languages: ["de", "en"]
-    
+
   - name: "Information Request"
     situation: "Ask for specific information about services"
     check_instructions: "Bot should provide relevant information or guide to resources"
     max_turns: 15
     scenario_languages: ["de"]
-    
+
   - name: "Complex Scenario"
     situation: "Present a complex problem requiring multiple interaction steps"
     check_template: |
@@ -129,7 +129,7 @@ scenarios:
       Conversation: {conversation}
     max_turns: 20
     scenario_languages: ["de", "en", "fr"]
-    
+
   - name: "Skip This Test"
     situation: "This test is not ready yet"
     skip: true
@@ -153,6 +153,31 @@ scenarios:
 - **max_turns**: Maximum conversation turns (default: 20)
 - **scenario_languages**: List of language codes to test (default: ["de"])
 - **skip**: Set to true to skip this scenario (default: false)
+- **accept_incomplete_case**: Set to true to allow check prompts to run even if case doesn't complete within max_turns (default: false)
+
+#### Using `accept_incomplete_case`
+
+By default, if a conversation doesn't complete (case_state != CASE_COMPLETED) within `max_turns`, the test immediately fails. However, sometimes you want to evaluate partial conversations:
+
+```yaml
+scenarios:
+  - name: "Information Gathering Test"
+    situation: "User asks questions about services"
+    max_turns: 5
+    accept_incomplete_case: true  # Don't auto-fail if incomplete
+    check_instructions: |
+      Even if case didn't complete (check case_completion_status), verify:
+      1. Bot provided helpful information
+      2. Conversation made progress
+
+      The LLM can still fail the test if quality is poor.
+```
+
+When `accept_incomplete_case: true`:
+- Tests don't automatically fail on incomplete cases
+- Check prompts receive a `case_completion_status` variable ("completed" or "not completed (max turns reached)")
+- LLM evaluator can make informed decisions about pass/fail based on conversation quality
+- Without check_instructions, incomplete cases pass with a descriptive message
 
 ## Language Support
 

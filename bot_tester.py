@@ -317,10 +317,11 @@ class Scenario(BaseModel):
     name: str
     situation: str
     check_template: str = None
-    max_turns: int = 20
+    max_turns: Optional[int] = None
     check_instructions: str = None
     scenario_languages: list[LanaguageCode] = [LanaguageCode.de]
     skip: Optional[bool] = False
+    accept_incomplete_case: Optional[bool] = False
 
 
 class Config(BaseModel):
@@ -617,7 +618,11 @@ def run_scenario(scn, cfg, ask):
 
                 send_user_message(url_base, case_object, headers, cfg.corpus_key, reply)
 
-            if not is_completed(conv):
+            # Check if case completed
+            case_completed = is_completed(conv)
+
+            if not case_completed and not scn.accept_incomplete_case:
+                # Case not completed and we don't accept incomplete cases
                 test_result = BotTestResult(
                     test_passed=BotTestResultStatus.NOK,
                     description="Konversation nicht abgeschlossen.",
@@ -647,6 +652,13 @@ def run_scenario(scn, cfg, ask):
 
                 test_result_schema = json.dumps(BotTestResult.model_json_schema())
 
+                # Determine case completion status for check prompt
+                case_completion_status = (
+                    "completed"
+                    if case_completed
+                    else "not completed (max turns reached)"
+                )
+
                 # Use the proper check template from config, not just the instructions
                 if check_template is not None:
                     check_prompt = check_template.render(
@@ -655,6 +667,7 @@ def run_scenario(scn, cfg, ask):
                         check_instructions=scn.check_instructions,
                         test_result_schema=test_result_schema,
                         language=language.language_name,
+                        case_completion_status=case_completion_status,
                     )
                 else:
                     # Fallback to just using check_instructions as a simple template
@@ -665,6 +678,7 @@ def run_scenario(scn, cfg, ask):
                         check_instructions=scn.check_instructions,
                         test_result_schema=test_result_schema,
                         language=language.language_name,
+                        case_completion_status=case_completion_status,
                     )
 
                 _logger.info("Check-Prompt an LLM:\n%s", check_prompt)
@@ -721,10 +735,19 @@ def run_scenario(scn, cfg, ask):
                 test_results.append(test_result_record)
 
             else:
-                test_result = BotTestResult(
-                    test_passed=BotTestResultStatus.OK,
-                    description="Case completed successfully - no check instructions provided.",
-                )
+                # No check instructions provided
+                if case_completed:
+                    test_result = BotTestResult(
+                        test_passed=BotTestResultStatus.OK,
+                        description="Case completed successfully - no check instructions provided.",
+                    )
+                else:
+                    # Case not completed but accept_incomplete_case is True
+                    test_result = BotTestResult(
+                        test_passed=BotTestResultStatus.OK,
+                        description="Case not completed but accepted as incomplete - no check instructions provided.",
+                    )
+
                 test_result_record = BotTestResultRecord(
                     test_name=scn.name,
                     test_result=test_result,

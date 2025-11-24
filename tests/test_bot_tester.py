@@ -75,7 +75,7 @@ class TestConfigModels:
     def test_scenario_model_defaults(self):
         """Test scenario model with defaults"""
         scenario = Scenario(name="Test", situation="Test situation")
-        assert scenario.max_turns == 20
+        assert scenario.max_turns is None
         assert scenario.scenario_languages == [LanaguageCode.de]
         assert scenario.skip is False
 
@@ -955,6 +955,473 @@ class TestScenarioExecution:
         # All should be skipped
         for result in results:
             assert result.test_result.test_passed == BotTestResultStatus.SKIPPED
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    def test_run_scenario_respects_global_max_turns(
+        self,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test that scenario respects global max_turns when not specified at scenario level"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "Conversation text"
+
+        # Create scenario WITHOUT specifying max_turns (should use global config)
+        scenario = Scenario(
+            name="Global Max Turns Test",
+            situation="Test global max turns",
+            scenario_languages=[LanaguageCode.de],
+        )
+
+        # Verify that max_turns is None (not 20)
+        assert scenario.max_turns is None
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            max_turns=5,  # Global config sets max_turns to 5
+        )
+
+        ask_mock = MagicMock()
+        ask_mock.ask.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Test response"))]
+        )
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        # Should have tried exactly 5 turns (global max_turns)
+        assert mock_send_message.call_count == 5
+        assert len(results) == 1
+        assert results[0].test_result.test_passed == BotTestResultStatus.NOK
+        assert "nicht abgeschlossen" in results[0].test_result.description
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    def test_run_scenario_respects_scenario_max_turns_over_global(
+        self,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test that scenario-level max_turns overrides global config"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "Conversation text"
+
+        # Create scenario WITH explicit max_turns
+        scenario = Scenario(
+            name="Scenario Max Turns Test",
+            situation="Test scenario max turns",
+            max_turns=3,  # Explicitly set to 3
+            scenario_languages=[LanaguageCode.de],
+        )
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            max_turns=10,  # Global config has different value
+        )
+
+        ask_mock = MagicMock()
+        ask_mock.ask.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Test response"))]
+        )
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        # Should have tried exactly 3 turns (scenario max_turns)
+        assert mock_send_message.call_count == 3
+        assert len(results) == 1
+        assert results[0].test_result.test_passed == BotTestResultStatus.NOK
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    def test_run_scenario_defaults_to_20_when_no_config(
+        self,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test that max_turns defaults to 20 when neither scenario nor config specify it"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "Conversation text"
+
+        # Create scenario WITHOUT max_turns
+        scenario = Scenario(
+            name="Default Max Turns Test",
+            situation="Test default max turns",
+            scenario_languages=[LanaguageCode.de],
+        )
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        # Create config without explicit max_turns (uses default of 20)
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+        )
+
+        ask_mock = MagicMock()
+        ask_mock.ask.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Test response"))]
+        )
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        # Should have tried exactly 20 turns (default)
+        assert mock_send_message.call_count == 20
+        assert len(results) == 1
+        assert results[0].test_result.test_passed == BotTestResultStatus.NOK
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    @patch("bot_tester.get_case_conversation")
+    def test_run_scenario_accept_incomplete_case_with_check_instructions(
+        self,
+        mock_get_conversation,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test that accept_incomplete_case=True allows running check prompts on incomplete cases"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Case never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "User: Hello\nAssistant: Hi there"
+        mock_get_conversation.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+
+        # Create scenario with accept_incomplete_case=True and check_instructions
+        scenario = Scenario(
+            name="Accept Incomplete Test",
+            situation="Test incomplete case acceptance",
+            max_turns=3,
+            accept_incomplete_case=True,
+            check_instructions="Check if the conversation made progress",
+            scenario_languages=[LanaguageCode.de],
+        )
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+            check_template="Check: {check_instructions}\nCase status: {case_completion_status}",
+        )
+
+        ask_mock = MagicMock()
+        # First response for user messages
+        ask_mock.ask.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Test response"))]
+        )
+
+        # Mock the check prompt response - LLM decides it's OK despite incomplete
+        check_result = json.dumps(
+            {
+                "test_passed": "OK",
+                "description": "Conversation made good progress even though not completed",
+            }
+        )
+
+        def ask_side_effect(messages, **kwargs):
+            # If it's the check prompt (contains "Check:")
+            if any("Check:" in str(msg) for msg in messages):
+                return MagicMock(
+                    choices=[MagicMock(message=MagicMock(content=check_result))]
+                )
+            # Otherwise it's a user message prompt
+            return MagicMock(
+                choices=[MagicMock(message=MagicMock(content="Test response"))]
+            )
+
+        ask_mock.ask.side_effect = ask_side_effect
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        # Should have tried 3 turns
+        assert mock_send_message.call_count == 3
+        assert len(results) == 1
+        # Should pass because LLM evaluated it as OK
+        assert results[0].test_result.test_passed == BotTestResultStatus.OK
+        assert "good progress" in results[0].test_result.description
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    @patch("bot_tester.get_case_conversation")
+    def test_run_scenario_accept_incomplete_case_llm_fails_it(
+        self,
+        mock_get_conversation,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test that LLM can still fail an incomplete case when accept_incomplete_case=True"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Case never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "User: Hello\nAssistant: Goodbye"
+        mock_get_conversation.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+
+        # Create scenario with accept_incomplete_case=True
+        scenario = Scenario(
+            name="Accept Incomplete But LLM Fails",
+            situation="Test that LLM can fail incomplete case",
+            max_turns=2,
+            accept_incomplete_case=True,
+            check_instructions="Verify the bot provided helpful information",
+            scenario_languages=[LanaguageCode.en],
+        )
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+        )
+
+        # Mock the check prompt response - LLM decides it's NOK
+        check_result = json.dumps(
+            {
+                "test_passed": "NOK",
+                "description": "Bot did not provide helpful information, case incomplete",
+            }
+        )
+
+        ask_mock = MagicMock()
+        call_count = [0]
+
+        def ask_side_effect(messages, **kwargs):
+            call_count[0] += 1
+            # First 2 calls are user message prompts, 3rd call is the check prompt
+            if call_count[0] <= 2:
+                return MagicMock(
+                    choices=[MagicMock(message=MagicMock(content="Test response"))]
+                )
+            else:
+                return MagicMock(
+                    choices=[MagicMock(message=MagicMock(content=check_result))]
+                )
+
+        ask_mock.ask.side_effect = ask_side_effect
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        assert len(results) == 1
+        # Should fail because LLM evaluated it as NOK
+        assert results[0].test_result.test_passed == BotTestResultStatus.NOK
+        assert "did not provide helpful" in results[0].test_result.description
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    def test_run_scenario_accept_incomplete_without_check_instructions(
+        self,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test accept_incomplete_case=True without check_instructions marks as OK"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Case never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "Conversation"
+
+        # Create scenario with accept_incomplete_case=True but no check_instructions
+        scenario = Scenario(
+            name="Accept Incomplete No Check",
+            situation="Test incomplete without checks",
+            max_turns=2,
+            accept_incomplete_case=True,
+            scenario_languages=[LanaguageCode.de],
+        )
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+        )
+
+        ask_mock = MagicMock()
+        ask_mock.ask.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Test response"))]
+        )
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        assert len(results) == 1
+        # Should pass because accept_incomplete_case=True and no check instructions
+        assert results[0].test_result.test_passed == BotTestResultStatus.OK
+        assert "accepted as incomplete" in results[0].test_result.description
+
+    @patch("bot_tester.create_new_case")
+    @patch("bot_tester.poll_until_user_turn")
+    @patch("bot_tester.send_user_message")
+    @patch("bot_tester.is_completed")
+    @patch("bot_tester.last_assistant_message")
+    @patch("bot_tester.format_conversation")
+    def test_run_scenario_reject_incomplete_case_by_default(
+        self,
+        mock_format_conv,
+        mock_last_msg,
+        mock_is_completed,
+        mock_send_message,
+        mock_poll,
+        mock_create_case,
+    ):
+        """Test that incomplete cases fail by default (accept_incomplete_case=False)"""
+        # Setup mocks
+        mock_create_case.return_value = {
+            "case_manager_id": "cm123",
+            "managed_case_id": "mc456",
+        }
+        mock_poll.return_value = {
+            "case_state": "WAITING_FOR_USER_INPUT",
+            "conversations_list": [],
+        }
+        mock_send_message.return_value = {}
+        mock_is_completed.return_value = False  # Case never completes
+        mock_last_msg.return_value = "Bot response"
+        mock_format_conv.return_value = "Conversation"
+
+        # Create scenario WITHOUT accept_incomplete_case (defaults to False)
+        scenario = Scenario(
+            name="Reject Incomplete Default",
+            situation="Test default incomplete rejection",
+            max_turns=2,
+            check_instructions="Some check",  # Has check instructions but won't run
+            scenario_languages=[LanaguageCode.de],
+        )
+
+        api_config = ApiConfig(base_url="https://test.example.com")
+        config = Config(
+            api=api_config,
+            corpus_key="test_corpus",
+            prompt_template="Test: {situation}",
+        )
+
+        ask_mock = MagicMock()
+        ask_mock.ask.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="Test response"))]
+        )
+
+        results = run_scenario(scenario, config, ask_mock)
+
+        assert len(results) == 1
+        # Should fail because case not completed and accept_incomplete_case=False
+        assert results[0].test_result.test_passed == BotTestResultStatus.NOK
+        assert "nicht abgeschlossen" in results[0].test_result.description
 
 
 class TestMainFunctionIntegration:
