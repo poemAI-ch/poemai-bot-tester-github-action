@@ -84,7 +84,7 @@ class TestConfigModels:
         config_data = {
             "api": {"base_url": "https://api.example.com"},
             "corpus_key": "test_corpus",
-            "model": "GPT_4_o_CHATGPT_LATEST",
+            "model": "GPT_4_1",
             "prompt_template": "Test template",
             "debug_url_template": "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}",
             "conversation_url_template": "https://chat.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}",
@@ -97,7 +97,7 @@ class TestConfigModels:
         }
         config = Config(**config_data)
         assert config.corpus_key == "test_corpus"
-        assert config.model == "GPT_4_o_CHATGPT_LATEST"
+        assert config.model == "GPT_4_1"
         assert (
             config.debug_url_template
             == "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
@@ -117,7 +117,7 @@ class TestConfigModels:
             "scenarios": [],
         }
         config = Config(**config_data)
-        assert config.model == "GPT_4_o_CHATGPT_LATEST"  # Default value
+        assert config.model == "GPT_4_1"  # Default value
         assert config.max_turns == 20  # Default value
         assert config.test_set_title is None  # Default value
         assert config.debug_url_template is None  # Default value
@@ -156,7 +156,7 @@ class TestConfigLoading:
 api:
   base_url: "https://api.example.com"
 corpus_key: "test_corpus"
-model: "GPT_4_o_CHATGPT_LATEST"
+model: "GPT_4_1"
 prompt_template: "Test template"
 test_set_title: "Test Suite"
 debug_url_template: "https://debug.example.com/{corpus_key}/{case_manager_id}/{managed_case_id}"
@@ -172,7 +172,7 @@ scenarios:
         with patch("builtins.open", mock_open(read_data=yaml_content)):
             config = load_config("test.yaml")
             assert config.corpus_key == "test_corpus"
-            assert config.model == "GPT_4_o_CHATGPT_LATEST"
+            assert config.model == "GPT_4_1"
             assert config.test_set_title == "Test Suite"
             assert (
                 config.debug_url_template
@@ -199,7 +199,7 @@ scenarios:
 api:
   base_url: "https://api.example.com"
 # Missing corpus_key and prompt_template but model is included
-model: "GPT_4_o_CHATGPT_LATEST"
+model: "GPT_4_1"
 scenarios: []
 """
         with patch("builtins.open", mock_open(read_data=incomplete_yaml)):
@@ -1446,7 +1446,7 @@ class TestMainFunctionIntegration:
         mock_config = Config(
             api=ApiConfig(base_url="https://test.com"),
             corpus_key="test_corpus",
-            model="GPT_4_o_CHATGPT_LATEST",
+            model="GPT_4_1",
             prompt_template="Test: {situation}",
             scenarios=[],
         )

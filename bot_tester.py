@@ -327,7 +327,7 @@ class Scenario(BaseModel):
 class Config(BaseModel):
     api: ApiConfig
     corpus_key: str
-    model: str = "GPT_4_o_CHATGPT_LATEST"
+    model: str = "GPT_4_1"
     prompt_template: str
     check_template: str = None
     max_turns: int = 20

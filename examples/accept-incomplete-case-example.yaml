@@ -2,7 +2,7 @@ api:
   base_url: "https://app.staging.poemai.ch/api/auth_proxy/v1/internal/api/assistant/v2/public"
 
 corpus_key: "YOUR_CORPUS_KEY"
-model: "GPT_4_o_CHATGPT_LATEST"
+model: "GPT_4_1"
 
 # Template for generating user messages during conversation
 prompt_template: |
